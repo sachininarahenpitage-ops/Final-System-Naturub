@@ -1,0 +1,7 @@
+# Demand Forecasting AI — User Accounts
+# Format: username,password
+# Add or remove users here and push to GitHub to update access
+# Lines starting with # are comments and are ignored
+admin,admin123
+sachini,forecast2026
+supervisor,office2026
