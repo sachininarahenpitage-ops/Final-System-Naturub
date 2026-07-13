@@ -27,7 +27,7 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 .block-container { padding-top: 1.5rem; }
 .kpi { background:#0f172a; border:1px solid #1e3a5f; border-radius:10px; padding:1.2rem 1rem; text-align:center; margin-bottom:0.5rem; }
 .kpi .label { color:#64748b; font-size:0.7rem; text-transform:uppercase; letter-spacing:2px; }
-.kpi .value { color:#38bdf8; font-size:1.8rem; font-weight:700; font-family:'IBM Plex Mono'; }
+.kpi .value { color:#38bdf8; font-size:1.35rem; font-weight:700; font-family:'IBM Plex Mono'; white-space:nowrap; }
 .kpi .sub   { color:#94a3b8; font-size:0.75rem; }
 .kpi-red .value  { color:#ef4444; }
 .kpi-green .value { color:#22c55e; }
@@ -203,20 +203,66 @@ def get_forecast(item_code, issued_item, horizon_days, ml_artifacts):
         return avg_daily * horizon_days, "Baseline 📊", avg_daily
 
 # ── Data loading ──────────────────────────────────────────────────────────────
-@st.cache_data
+def _get_engine():
+    """Create SQLAlchemy engine from db_config settings."""
+    try:
+        from sqlalchemy import create_engine
+        import db_config
+        conn_str = db_config.get_connection_string()
+        return create_engine(conn_str, fast_executemany=True)
+    except Exception as e:
+        st.error(f"❌ Could not connect to database: {e}")
+        st.info("👉 Open **db_config.py** and fill in your SERVER, DATABASE, and login details.")
+        st.stop()
+
+def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardise column types."""
+    df["ITEM_CODE"]        = df["ITEM_CODE"].astype(str).str.strip()
+    df["ITEM_DESCRIPTION"] = df["ITEM_DESCRIPTION"].astype(str).str.strip()
+    df["QTY"]              = pd.to_numeric(df["QTY"], errors="coerce").fillna(0)
+    df["BALANCE_QTY"]      = pd.to_numeric(df["BALANCE_QTY"], errors="coerce")
+    df["REORDER_QTY"]      = pd.to_numeric(df["REORDER_QTY"], errors="coerce").fillna(0)
+    df["SIH"]              = pd.to_numeric(df["SIH"], errors="coerce").fillna(0)
+    df["TRANSACTION_DATE"] = pd.to_datetime(df["TRANSACTION_DATE"], errors="coerce")
+    return df
+
+def _get_cache_ttl():
+    """Read CACHE_TTL from db_config, default 300s if not set."""
+    try:
+        import db_config
+        return db_config.CACHE_TTL
+    except Exception:
+        return 300
+
+@st.cache_data(ttl=_get_cache_ttl())
 def load_data():
-    base = os.path.dirname(os.path.abspath(__file__))
-    grn    = pd.read_parquet(os.path.join(base, "GRN_Dataset.parquet"))
-    issued = pd.read_parquet(os.path.join(base, "Issued_Dataset.parquet"))
-    req    = pd.read_parquet(os.path.join(base, "Requested_Data.parquet"))
-    for df in [grn, issued]:
-        df["ITEM_CODE"]        = df["ITEM_CODE"].astype(str).str.strip()
-        df["ITEM_DESCRIPTION"] = df["ITEM_DESCRIPTION"].astype(str).str.strip()
-        df["QTY"]              = pd.to_numeric(df["QTY"], errors="coerce").fillna(0)
-        df["BALANCE_QTY"]      = pd.to_numeric(df["BALANCE_QTY"], errors="coerce")
-        df["REORDER_QTY"]      = pd.to_numeric(df["REORDER_QTY"], errors="coerce").fillna(0)
-        df["SIH"]              = pd.to_numeric(df["SIH"], errors="coerce").fillna(0)
-        df["TRANSACTION_DATE"] = pd.to_datetime(df["TRANSACTION_DATE"], errors="coerce")
+    """
+    Load GRN, Issued, and Requested data from SQL Server.
+    Data is cached for CACHE_TTL seconds (set in db_config.py) then
+    automatically re-fetched so the app always shows up-to-date stock.
+    """
+    import db_config
+    tables = db_config.get_table_names()
+    engine = _get_engine()
+
+    try:
+        with engine.connect() as conn:
+            grn    = pd.read_sql(f"SELECT * FROM {tables['grn']}",       conn)
+            issued = pd.read_sql(f"SELECT * FROM {tables['issued']}",    conn)
+            req    = pd.read_sql(f"SELECT * FROM {tables['requested']}", conn)
+    except Exception as e:
+        st.error(f"❌ Failed to load data from database: {e}")
+        st.info(
+            "Common fixes:\n"
+            "- Check your SERVER and DATABASE names in **db_config.py**\n"
+            "- Make sure the ODBC Driver 17 for SQL Server is installed on this machine\n"
+            "- Confirm the table names match what's in your database\n"
+            "- Check your network/VPN connection to the office server"
+        )
+        st.stop()
+
+    grn    = _clean_df(grn)
+    issued = _clean_df(issued)
     return grn, issued, req
 
 def get_item_info(grn, issued, item_code):
@@ -283,6 +329,19 @@ def show_app():
             "📅 Order Date Planner",
             "📈 Reorder Optimizer",
         ])
+        st.markdown("---")
+        # Live database status
+        try:
+            import db_config
+            st.markdown(f"🗄️ **Database:** {db_config.DATABASE}")
+            st.markdown(f"🖥️ **Server:** {db_config.SERVER}")
+            st.markdown(f"🔄 **Refresh every:** {db_config.CACHE_TTL // 60} min")
+        except Exception:
+            st.markdown("⚠️ db_config not set up")
+        st.caption(f"Last loaded: {datetime.now().strftime('%H:%M:%S')}")
+        if st.button("🔄 Refresh Data Now", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
         st.markdown("---")
         if st.button("🚪 Log Out", use_container_width=True):
             st.session_state.clear()
