@@ -25,9 +25,9 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;600&family=IBM+Plex+Mono:wght@400;600&display=swap');
 html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 .block-container { padding-top: 1.5rem; }
-.kpi { background:#0f172a; border:1px solid #1e3a5f; border-radius:10px; padding:1.2rem 0.6rem; text-align:center; margin-bottom:0.5rem; }
+.kpi { background:#0f172a; border:1px solid #1e3a5f; border-radius:10px; padding:1.2rem 1rem; text-align:center; margin-bottom:0.5rem; }
 .kpi .label { color:#64748b; font-size:0.7rem; text-transform:uppercase; letter-spacing:2px; }
-.kpi .value { color:#38bdf8; font-size:clamp(1.05rem, 1.5vw, 1.5rem); font-weight:700; font-family:'IBM Plex Mono'; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block; line-height:1.3; }
+.kpi .value { color:#38bdf8; font-size:1.8rem; font-weight:700; font-family:'IBM Plex Mono'; }
 .kpi .sub   { color:#94a3b8; font-size:0.75rem; }
 .kpi-red .value  { color:#ef4444; }
 .kpi-green .value { color:#22c55e; }
@@ -253,7 +253,12 @@ def monthly_movement(grn_item, issued_item):
     iss_m = (issued_item.set_index("TRANSACTION_DATE")["QTY"]
              .resample("ME").sum().reset_index()
              .rename(columns={"TRANSACTION_DATE":"month","QTY":"issued"}))
+    # Monthly SIH: last recorded SIH value per month (end-of-month balance)
+    sih_m = (grn_item.set_index("TRANSACTION_DATE")["SIH"]
+             .resample("ME").last().reset_index()
+             .rename(columns={"TRANSACTION_DATE":"month","SIH":"sih"}))
     m = pd.merge(grn_m, iss_m, on="month", how="outer").fillna(0).sort_values("month")
+    m = pd.merge(m, sih_m, on="month", how="left")
     return m
 
 # ── Main App ──────────────────────────────────────────────────────────────────
@@ -409,6 +414,10 @@ def show_app():
                     fig = go.Figure()
                     fig.add_trace(go.Bar(x=m["month"],y=m["received"],name="Received",marker_color="#38bdf8",opacity=0.8))
                     fig.add_trace(go.Bar(x=m["month"],y=m["issued"],name="Issued",marker_color="#f97316",opacity=0.8))
+                    if "sih" in m.columns and m["sih"].notna().any():
+                        fig.add_trace(go.Scatter(x=m["month"],y=m["sih"],name="Stock in Hand (SIH)",
+                                                 mode="lines+markers",line=dict(color="#22c55e",width=2,dash="dash"),
+                                                 marker=dict(size=6)))
                     if info['reorder_qty']>0:
                         fig.add_hline(y=info['reorder_qty'],line_dash="dash",line_color="#ef4444",annotation_text="Reorder Point")
                     fig.update_layout(barmode="group",template="plotly_dark",title="Monthly Stock Movement — Bar",
@@ -421,6 +430,10 @@ def show_app():
                                               mode="lines+markers",line=dict(color="#38bdf8",width=2)))
                     fig2.add_trace(go.Scatter(x=m["month"],y=m["issued"],name="Issued",
                                               mode="lines+markers",line=dict(color="#f97316",width=2)))
+                    if "sih" in m.columns and m["sih"].notna().any():
+                        fig2.add_trace(go.Scatter(x=m["month"],y=m["sih"],name="Stock in Hand (SIH)",
+                                                  mode="lines+markers",line=dict(color="#22c55e",width=2,dash="dash"),
+                                                  marker=dict(size=6)))
                     if info['reorder_qty']>0:
                         fig2.add_hline(y=info['reorder_qty'],line_dash="dash",line_color="#ef4444",annotation_text="Reorder Point")
                     fig2.update_layout(template="plotly_dark",title="Monthly Stock Movement — Line",
@@ -428,18 +441,29 @@ def show_app():
                                        legend=dict(orientation="h",y=1.1))
                     st.plotly_chart(fig2,use_container_width=True)
 
-                # Cumulative trend
+                # Cumulative trend + SIH over time
                 m["net"] = m["received"] - m["issued"]
                 m["cumulative"] = m["net"].cumsum()
                 fig3 = go.Figure()
                 fig3.add_trace(go.Scatter(x=m["month"],y=m["cumulative"],mode="lines+markers",
                                           name="Cumulative Net",line=dict(color="#22c55e",width=2)))
+                if "sih" in m.columns and m["sih"].notna().any():
+                    fig3.add_trace(go.Scatter(x=m["month"],y=m["sih"],name="Stock in Hand (SIH)",
+                                              mode="lines+markers",line=dict(color="#38bdf8",width=2,dash="dot"),
+                                              marker=dict(size=6)))
+                    sih_valid = m[m["sih"].notna()]
+                    if not sih_valid.empty:
+                        low_sih = sih_valid[sih_valid["sih"] == sih_valid["sih"].min()]
+                        fig3.add_trace(go.Scatter(x=low_sih["month"],y=low_sih["sih"],mode="markers",
+                                                  name="Lowest SIH",marker=dict(color="#ef4444",size=12,symbol="x")))
                 if info['reorder_qty']>0:
+                    fig3.add_hline(y=info['reorder_qty'],line_dash="dash",line_color="#ef4444",annotation_text="Reorder Point")
                     below = m[m["cumulative"]<info['reorder_qty']]
                     if not below.empty:
                         fig3.add_trace(go.Scatter(x=below["month"],y=below["cumulative"],mode="markers",
-                                                  name="Below Reorder",marker=dict(color="#ef4444",size=10,symbol="x")))
-                fig3.update_layout(template="plotly_dark",title="Cumulative Stock Trend",height=350)
+                                                  name="Below Reorder",marker=dict(color="#f59e0b",size=10,symbol="x")))
+                fig3.update_layout(template="plotly_dark",title="Cumulative Stock Trend & Stock in Hand",height=350,
+                                   legend=dict(orientation="h",y=1.1))
                 st.plotly_chart(fig3,use_container_width=True)
 
                 # ── Historical Patterns ───────────────────────────────────────
@@ -508,62 +532,31 @@ def show_app():
     # ── PAGE 3: Reorder Alerts ────────────────────────────────────────────────
     elif page == "⚠️ Reorder Alerts":
         st.markdown("# ⚠️ Reorder Alerts")
-        st.markdown("Stock status for every tracked item — items needing reorder, and items currently healthy.")
+        st.markdown("All items currently at or below their reorder point.")
         st.markdown("---")
         with st.spinner("Scanning all items..."):
             latest = (grn.sort_values("TRANSACTION_DATE").groupby("ITEM_CODE").last().reset_index()
                       [["ITEM_CODE","ITEM_DESCRIPTION","SIH","REORDER_QTY","STOCK_TYPE","MEASUER_UNIT"]])
             latest["SIH"]         = pd.to_numeric(latest["SIH"],errors="coerce").fillna(0)
             latest["REORDER_QTY"] = pd.to_numeric(latest["REORDER_QTY"],errors="coerce").fillna(0)
+            alerts = latest[(latest["REORDER_QTY"]>0)&(latest["SIH"]<=latest["REORDER_QTY"])].copy()
+            alerts["Stock Gap"] = (alerts["REORDER_QTY"]-alerts["SIH"]).round(2)
+            alerts["Status"] = alerts.apply(lambda r: "🔴 RED" if r["SIH"]<=r["REORDER_QTY"] else "🟡 AMBER", axis=1)
+            alerts = alerts.sort_values("Stock Gap",ascending=False)
 
-            tracked = latest[latest["REORDER_QTY"] > 0].copy()
-
-            needs_reorder = tracked[tracked["SIH"] <= tracked["REORDER_QTY"]].copy()
-            needs_reorder["Gap"] = (needs_reorder["REORDER_QTY"] - needs_reorder["SIH"]).round(2)
-            needs_reorder["Status"] = "🔴 RED"
-            needs_reorder = needs_reorder.sort_values("Gap", ascending=False)
-
-            stock_ok = tracked[tracked["SIH"] > tracked["REORDER_QTY"]].copy()
-            stock_ok["Surplus"] = (stock_ok["SIH"] - stock_ok["REORDER_QTY"]).round(2)
-            stock_ok["Status"] = stock_ok.apply(
-                lambda r: "🟡 AMBER" if r["SIH"] <= r["REORDER_QTY"] * 1.20 else "🟢 GREEN", axis=1)
-            stock_ok = stock_ok.sort_values("Surplus", ascending=True)
-
-        # ── Summary cards ──────────────────────────────────────────────────
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(f'<div class="kpi kpi-red"><div class="label">Needs Reorder</div><div class="value">{len(needs_reorder)}</div><div class="sub">at or below reorder point</div></div>', unsafe_allow_html=True)
-        c2.markdown(f'<div class="kpi kpi-green"><div class="label">Stock OK</div><div class="value">{len(stock_ok)}</div><div class="sub">above reorder point</div></div>', unsafe_allow_html=True)
-        c3.markdown(f'<div class="kpi"><div class="label">Total Tracked</div><div class="value">{len(tracked)}</div><div class="sub">items with a reorder point set</div></div>', unsafe_allow_html=True)
+        c1,c2,c3 = st.columns(3)
+        c1.markdown(f'<div class="kpi kpi-red"><div class="label">Items Below Reorder</div><div class="value">{len(alerts)}</div><div class="sub">require attention</div></div>',unsafe_allow_html=True)
+        c2.markdown(f'<div class="kpi"><div class="label">Total Items</div><div class="value">{len(latest)}</div><div class="sub">tracked</div></div>',unsafe_allow_html=True)
+        c3.markdown(f'<div class="kpi kpi-amber"><div class="label">Alert Rate</div><div class="value">{len(alerts)/max(len(latest),1)*100:.1f}%</div><div class="sub">at risk</div></div>',unsafe_allow_html=True)
 
         st.markdown("")
-
-        # ── Section 1: Needs Reorder ──────────────────────────────────────────
-        st.markdown('<p class="section-title">🔴 Needs Reorder</p>', unsafe_allow_html=True)
-        type_filter_1 = st.selectbox("Filter by Stock Type", ["All"] + sorted(needs_reorder["STOCK_TYPE"].dropna().unique().tolist()), key="filter_needs")
-        disp1 = needs_reorder if type_filter_1 == "All" else needs_reorder[needs_reorder["STOCK_TYPE"] == type_filter_1]
-        if disp1.empty:
-            st.markdown('<div class="alert-green">✅ No items currently need reordering.</div>', unsafe_allow_html=True)
-        else:
-            st.dataframe(disp1[["ITEM_CODE","ITEM_DESCRIPTION","STOCK_TYPE","MEASUER_UNIT","SIH","REORDER_QTY","Gap","Status"]]
-                         .rename(columns={"ITEM_CODE":"Code","ITEM_DESCRIPTION":"Description","STOCK_TYPE":"Type",
-                                          "MEASUER_UNIT":"Unit","SIH":"Stock in Hand","REORDER_QTY":"Reorder Point"}),
-                         use_container_width=True, hide_index=True)
-            st.download_button("⬇️ Download Needs-Reorder List", disp1.to_csv(index=False).encode(), "needs_reorder.csv", "text/csv", key="dl_needs")
-
-        st.markdown("---")
-
-        # ── Section 2: Stock OK ────────────────────────────────────────────────
-        st.markdown('<p class="section-title">🟢 Stock OK</p>', unsafe_allow_html=True)
-        type_filter_2 = st.selectbox("Filter by Stock Type", ["All"] + sorted(stock_ok["STOCK_TYPE"].dropna().unique().tolist()), key="filter_ok")
-        disp2 = stock_ok if type_filter_2 == "All" else stock_ok[stock_ok["STOCK_TYPE"] == type_filter_2]
-        if disp2.empty:
-            st.markdown('<div class="alert-amber">⚠️ No items currently above their reorder point.</div>', unsafe_allow_html=True)
-        else:
-            st.dataframe(disp2[["ITEM_CODE","ITEM_DESCRIPTION","STOCK_TYPE","MEASUER_UNIT","SIH","REORDER_QTY","Surplus","Status"]]
-                         .rename(columns={"ITEM_CODE":"Code","ITEM_DESCRIPTION":"Description","STOCK_TYPE":"Type",
-                                          "MEASUER_UNIT":"Unit","SIH":"Stock in Hand","REORDER_QTY":"Reorder Point"}),
-                         use_container_width=True, hide_index=True)
-            st.download_button("⬇️ Download Stock-OK List", disp2.to_csv(index=False).encode(), "stock_ok.csv", "text/csv", key="dl_ok")
+        type_filter = st.selectbox("Filter by Stock Type",["All"]+sorted(latest["STOCK_TYPE"].dropna().unique().tolist()))
+        disp = alerts if type_filter=="All" else alerts[alerts["STOCK_TYPE"]==type_filter]
+        st.dataframe(disp[["ITEM_CODE","ITEM_DESCRIPTION","STOCK_TYPE","MEASUER_UNIT","SIH","REORDER_QTY","Stock Gap","Status"]]
+                     .rename(columns={"ITEM_CODE":"Code","ITEM_DESCRIPTION":"Description","STOCK_TYPE":"Type",
+                                      "MEASUER_UNIT":"Unit","SIH":"Stock in Hand","REORDER_QTY":"Reorder Point","Stock Gap":"Gap"}),
+                     use_container_width=True,hide_index=True)
+        st.download_button("⬇️ Download Alert List",disp.to_csv(index=False).encode(),"reorder_alerts.csv","text/csv")
 
     # ── PAGE 4: Order Evaluator ───────────────────────────────────────────────
     elif page == "🛒 Order Evaluator":
